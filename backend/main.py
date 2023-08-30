@@ -3,6 +3,11 @@ from fastapi import FastAPI, Response, status
 from pydantic import BaseModel
 from starpoint.db import Client
 from os import environ
+import requests
+from uuid import UUID
+from io import BytesIO
+
+from PIL import Image
 
 import clip
 import torch
@@ -15,7 +20,7 @@ collection_id = environ.get("STARPOINT_COLLECTION_ID")
 if collection_id is None:
     raise ValueError("STARPOINT_COLLECTION_ID environment variable must be set")
 
-client = Client(api_key=api_key)
+client = Client(api_key=UUID(api_key))
 
 app = FastAPI()
 
@@ -30,7 +35,18 @@ def embed_text(text: str) -> List[float]:
         return text_encoded.tolist()[0]
 
 
-@app.get("/api/v1/query", response_model=None)
+def embed_image(image_url: str) -> List[float]:
+    image = requests.get(image_url).content
+    image_stream = BytesIO(image)
+    image = Image.open(image_stream)
+    image_input = preprocess(image).unsqueeze(0).to(device)
+    with torch.no_grad():
+        image_encoded = model.encode_image(image_input)
+        image_encoded /= image_encoded.norm(dim=-1, keepdim=True)
+        return image_encoded.tolist()[0]
+
+
+@app.get("/api/v1/image", response_model=None)
 def query(text: Optional[str] = None) -> Response | Dict[str, Any]:
     print("embedding", text)
     if text is not None:
@@ -39,12 +55,32 @@ def query(text: Optional[str] = None) -> Response | Dict[str, Any]:
             collection_id=collection_id,
             query_embedding=embedding,
         )
-        
         print(results.get("results"))
         return results
-        # print(len(embedding))
-        # return SimilarProductsResponse(text=text, embedding=embedding)
-
 
     # return a 400 error
     return Response(status_code=status.HTTP_400_BAD_REQUEST)
+
+
+class ImageData(BaseModel):
+    description: str
+    image_url: str
+
+
+@app.post("/api/v1/image", response_model=None)
+def insert(imageData: ImageData) -> Response | Dict[str, Any]:
+    embedding = embed_image(imageData.image_url)
+    documents = [{
+        "embedding": embedding,
+        "metadata": {
+            "image_url": imageData.image_url,
+            "description": imageData.description,
+        }
+    }]
+
+    results: Dict[str, Any] = client.insert(
+        collection_id=collection_id,
+        documents=documents,
+    )
+
+    return results
