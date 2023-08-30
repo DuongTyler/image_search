@@ -1,2 +1,2 @@
-# image_search
-image search using a vector database
+# Natural Language Image Search
+search your images in natural language with a vector database!
